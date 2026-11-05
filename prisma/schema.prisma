@@ -1,0 +1,589 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrgType {
+  BUSINESS
+  INDIVIDUAL
+}
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum PartyRole {
+  BUYER
+  SUPPLIER
+  EXPORTER
+}
+
+enum PlatformRole {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum VerificationStatus {
+  NOT_STARTED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum TicketStatus {
+  DRAFT
+  AWAITING_ACCEPTANCE
+  ACTIVE
+  FUNDED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  DISPUTED
+}
+
+enum PartyStatus {
+  INVITED
+  ACCEPTED
+  DECLINED
+}
+
+enum MilestoneStatus {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  REJECTED
+  RELEASED
+  CANCELLED
+}
+
+enum AmendmentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum WalletStatus {
+  ACTIVE
+  FROZEN
+}
+
+enum AccountType {
+  WALLET_AVAILABLE
+  WALLET_HELD
+  TICKET_ESCROW
+  PLATFORM_FEE
+  EXTERNAL_SETTLEMENT
+}
+
+enum EntryDirection {
+  DEBIT
+  CREDIT
+}
+
+enum TxnType {
+  WALLET_FUNDING
+  TICKET_FUNDING
+  MILESTONE_RELEASE
+  REFUND
+  FEE
+  ADJUSTMENT
+}
+
+enum TxnStatus {
+  PENDING
+  POSTED
+  FAILED
+  REVERSED
+}
+
+enum PaymentProvider {
+  MOCK
+  NOMBA
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum NotificationChannel {
+  EMAIL
+  IN_APP
+  WHATSAPP
+}
+
+enum DocumentKind {
+  EVIDENCE
+  CONTRACT
+  INVOICE
+  CERTIFICATE
+  ID_PROOF
+  REG_CERT
+  BANK_STATEMENT
+  PDF_EXPORT
+  OTHER
+}
+
+model User {
+  id                String   @id @default(uuid())
+  email             String   @unique
+  phone             String?  @unique
+  passwordHash      String
+  name              String
+  platformRole      PlatformRole @default(USER)
+  emailVerifiedAt   DateTime?
+  emailVerificationTokenHash   String?
+  emailVerificationExpiresAt   DateTime?
+  passwordResetTokenHash       String?
+  passwordResetExpiresAt       DateTime?
+  mfaSecret         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  memberships           Membership[]
+  refreshTokens         RefreshToken[]
+  ticketsCreated        Ticket[] @relation("TicketCreator")
+  flaggedTickets        Ticket[] @relation("TicketFlagger")
+  verificationReviews   VerificationCase[] @relation("VerificationReviewer")
+  proposedAmendments    TicketAmendment[] @relation("AmendmentProposer")
+  milestoneSubmissions  Milestone[] @relation("MilestoneSubmitter")
+  milestoneConfirmations Milestone[] @relation("MilestoneConfirmer")
+  uploadedDocuments     Document[] @relation("DocumentUploader")
+  partyAcceptances      TicketParty[] @relation("PartyAccepter")
+  invitationsSent       Invitation[] @relation("InvitationSender")
+  invitationsAccepted   Invitation[] @relation("InvitationAccepter")
+  notifications         Notification[]
+  notificationPreferences NotificationPreference[]
+  auditEvents           AuditEvent[]
+}
+
+model Organization {
+  id            String   @id @default(uuid())
+  name          String
+  type          OrgType
+  regNumber     String?
+  country       String   @default("NG")
+  roles         PartyRole[]
+  verification  VerificationStatus @default(NOT_STARTED)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  memberships       Membership[]
+  invitations       Invitation[]
+  verificationCases VerificationCase[]
+  wallets           Wallet[]
+  ticketsAsBuyer    Ticket[] @relation("TicketBuyer")
+  ticketsAsSupplier Ticket[] @relation("TicketSupplier")
+  ticketsAsExporter Ticket[] @relation("TicketExporter")
+  parties           TicketParty[]
+  documents         Document[]
+  idempotencyKeys   IdempotencyKey[]
+  auditEvents       AuditEvent[] @relation("AuditActorOrganization")
+}
+
+model Membership {
+  id             String  @id @default(uuid())
+  userId         String
+  organizationId String
+  role           OrgRole
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+model Invitation {
+  id             String @id @default(uuid())
+  organizationId String
+  email          String
+  role           OrgRole @default(MEMBER)
+  tokenHash      String @unique
+  status         InvitationStatus @default(PENDING)
+  invitedById    String
+  acceptedById   String?
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invitedBy    User         @relation("InvitationSender", fields: [invitedById], references: [id], onDelete: Restrict)
+  acceptedBy   User?        @relation("InvitationAccepter", fields: [acceptedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status])
+  @@index([email])
+}
+
+model VerificationCase {
+  id              String @id @default(uuid())
+  organizationId  String
+  status          VerificationStatus @default(PENDING)
+  provider        String @default("MOCK")
+  providerRef     String?
+  providerStatus  String?
+  providerData    Json?
+  completedAt     DateTime?
+  reviewedById    String?
+  reviewedAt      DateTime?
+  reason          String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  reviewedBy   User?        @relation("VerificationReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  documents    Document[]
+
+  @@unique([provider, providerRef])
+  @@index([organizationId])
+  @@index([status])
+}
+
+model Ticket {
+  id               String   @id @default(uuid())
+  reference        String   @unique
+  buyerOrgId       String
+  supplierOrgId    String
+  exporterOrgId    String?
+  status           TicketStatus @default(DRAFT)
+  version          Int      @default(1)
+  commodity        String
+  grade            String?
+  quantity         Decimal  @db.Decimal(18, 3)
+  unit             String
+  unitPriceMinor   BigInt
+  totalMinor       BigInt
+  currency         String   @default("NGN")
+  deliveryTerms    String?
+  deliveryLocation String?
+  deliveryFrom     DateTime?
+  deliveryTo       DateTime?
+  terms            String?
+  createdById      String
+  acceptedAt       DateTime?
+  fundedAt         DateTime?
+  completedAt      DateTime?
+  flaggedById      String?
+  flaggedAt        DateTime?
+  disputeReason    String?
+  disputedAt       DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  buyer     Organization  @relation("TicketBuyer", fields: [buyerOrgId], references: [id], onDelete: Restrict)
+  supplier  Organization  @relation("TicketSupplier", fields: [supplierOrgId], references: [id], onDelete: Restrict)
+  exporter  Organization? @relation("TicketExporter", fields: [exporterOrgId], references: [id], onDelete: Restrict)
+  createdBy User          @relation("TicketCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  flaggedBy User?         @relation("TicketFlagger", fields: [flaggedById], references: [id], onDelete: SetNull)
+
+  parties            TicketParty[]
+  milestones         Milestone[]
+  amendments         TicketAmendment[]
+  ledgerTransactions LedgerTransaction[]
+  ledgerAccounts     LedgerAccount[]
+  shareLinks         ShareLink[]
+  documents          Document[]
+
+  @@index([buyerOrgId, status])
+  @@index([supplierOrgId, status])
+  @@index([status, createdAt])
+}
+
+model TicketParty {
+  id             String @id @default(uuid())
+  ticketId       String
+  organizationId String
+  role           PartyRole
+  status         PartyStatus @default(INVITED)
+  invitedEmail   String?
+  acceptedById   String?
+  acceptedAt     DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  ticket       Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  acceptedBy   User?        @relation("PartyAccepter", fields: [acceptedById], references: [id], onDelete: SetNull)
+
+  @@unique([ticketId, organizationId, role])
+}
+
+model TicketAmendment {
+  id                   String @id @default(uuid())
+  ticketId             String
+  status               AmendmentStatus @default(PENDING)
+  patch                Json
+  proposedById         String
+  approvedByBuyerAt    DateTime?
+  approvedBySupplierAt DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  ticket     Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  proposedBy User   @relation("AmendmentProposer", fields: [proposedById], references: [id], onDelete: Restrict)
+
+  @@index([ticketId, status])
+}
+
+model Milestone {
+  id            String @id @default(uuid())
+  ticketId      String
+  sequence      Int
+  title         String
+  description   String?
+  releaseBp     Int
+  amountMinor   BigInt
+  dueDate       DateTime?
+  status        MilestoneStatus @default(PENDING)
+  submittedById String?
+  submittedAt   DateTime?
+  confirmedById String?
+  confirmedAt   DateTime?
+  releasedAt    DateTime?
+  rejectionNote String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  ticket      Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  submittedBy User?  @relation("MilestoneSubmitter", fields: [submittedById], references: [id], onDelete: SetNull)
+  confirmedBy User?  @relation("MilestoneConfirmer", fields: [confirmedById], references: [id], onDelete: SetNull)
+
+  evidence           Document[] @relation("MilestoneEvidence")
+  ledgerTransactions LedgerTransaction[] @relation("MilestoneReleases")
+
+  @@unique([ticketId, sequence])
+}
+
+model Wallet {
+  id               String @id @default(uuid())
+  organizationId   String
+  currency         String @default("NGN")
+  provider         PaymentProvider @default(MOCK)
+  providerWalletId String?
+  status           WalletStatus @default(ACTIVE)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  balance        WalletBalance?
+  ledgerAccounts LedgerAccount[]
+
+  @@unique([organizationId, currency])
+}
+
+model WalletBalance {
+  walletId       String @id
+  availableMinor BigInt @default(0)
+  heldMinor      BigInt @default(0)
+  updatedAt      DateTime @updatedAt
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+}
+
+model LedgerAccount {
+  id        String @id @default(uuid())
+  type      AccountType
+  walletId  String?
+  ticketId  String?
+  currency  String @default("NGN")
+  createdAt DateTime @default(now())
+
+  wallet  Wallet?  @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  ticket  Ticket?  @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+  entries LedgerEntry[]
+
+  @@index([walletId])
+  @@index([ticketId])
+}
+
+model LedgerTransaction {
+  id             String @id @default(uuid())
+  type           TxnType
+  status         TxnStatus @default(PENDING)
+  ticketId       String?
+  milestoneId    String?
+  provider       PaymentProvider
+  providerRef    String?
+  idempotencyKey String @unique
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  ticket    Ticket?    @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  milestone Milestone? @relation("MilestoneReleases", fields: [milestoneId], references: [id], onDelete: Restrict)
+  entries   LedgerEntry[]
+
+  @@index([ticketId])
+  @@index([milestoneId])
+}
+
+model LedgerEntry {
+  id            String @id @default(uuid())
+  transactionId String
+  accountId     String
+  direction     EntryDirection
+  amountMinor   BigInt
+  createdAt     DateTime @default(now())
+
+  transaction LedgerTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  account     LedgerAccount     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@index([transactionId])
+  @@index([accountId])
+}
+
+model Document {
+  id                  String @id @default(uuid())
+  ownerOrgId          String
+  uploadedById        String
+  ticketId            String?
+  milestoneId         String?
+  verificationCaseId  String?
+  kind                DocumentKind
+  storageKey          String
+  publicId            String?
+  secureUrl           String?
+  resourceType        String?
+  format              String?
+  originalName        String?
+  mimeType            String
+  sizeBytes           Int
+  checksum            String
+  createdAt           DateTime @default(now())
+
+  owner            Organization    @relation(fields: [ownerOrgId], references: [id], onDelete: Restrict)
+  uploadedBy       User            @relation("DocumentUploader", fields: [uploadedById], references: [id], onDelete: Restrict)
+  ticket           Ticket?         @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  milestone        Milestone?      @relation("MilestoneEvidence", fields: [milestoneId], references: [id], onDelete: Cascade)
+  verificationCase VerificationCase? @relation(fields: [verificationCaseId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId])
+  @@index([milestoneId])
+  @@index([verificationCaseId])
+  @@index([publicId])
+}
+
+model ShareLink {
+  id        String @id @default(uuid())
+  ticketId  String
+  tokenHash String @unique
+  expiresAt DateTime?
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+}
+
+model IdempotencyKey {
+  id             String @id @default(uuid())
+  organizationId String
+  endpoint       String
+  key            String
+  requestHash    String
+  responseCode   Int?
+  responseBody   Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, endpoint, key])
+  @@index([createdAt])
+}
+
+model ProviderEvent {
+  id          String @id @default(uuid())
+  provider    PaymentProvider
+  eventId     String
+  payload     Json
+  processedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  @@unique([provider, eventId])
+}
+
+model RefreshToken {
+  id         String @id @default(uuid())
+  userId     String
+  tokenHash  String @unique
+  userAgent  String?
+  ip         String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Notification {
+  id        String @id @default(uuid())
+  userId    String
+  type      String
+  channel   NotificationChannel @default(IN_APP)
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+}
+
+model NotificationPreference {
+  id        String @id @default(uuid())
+  userId    String
+  channel   NotificationChannel
+  eventType String
+  enabled   Boolean @default(true)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channel, eventType])
+}
+
+model AuditEvent {
+  id         String @id @default(uuid())
+  actorId    String?
+  actorOrgId String?
+  action     String
+  entityType String
+  entityId   String
+  before     Json?
+  after      Json?
+  ip         String?
+  userAgent  String?
+  requestId  String?
+  createdAt  DateTime @default(now())
+
+  actor    User?         @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actorOrg Organization? @relation("AuditActorOrganization", fields: [actorOrgId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model OutboxEvent {
+  id          String @id @default(uuid())
+  topic       String
+  payload     Json
+  processedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([processedAt, createdAt])
+}
