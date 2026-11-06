@@ -47,7 +47,10 @@ export const ticketInclude = {
     orderBy: { createdAt: "asc" as const }
   },
   milestones: {
-    orderBy: { sequence: "asc" as const }
+    orderBy: { sequence: "asc" as const },
+    include: {
+      evidence: { orderBy: { createdAt: "desc" as const } }
+    }
   }
 } satisfies Prisma.TicketInclude;
 
@@ -88,9 +91,14 @@ function serializeParty(party: TicketWithRelations["parties"][number]) {
   };
 }
 
-function serializeMilestone(
-  milestone: TicketWithRelations["milestones"][number]
-) {
+type SerializableMilestone = Omit<
+  TicketWithRelations["milestones"][number],
+  "evidence"
+> & {
+  evidence?: TicketWithRelations["milestones"][number]["evidence"];
+};
+
+function serializeMilestone(milestone: SerializableMilestone) {
   return {
     id: milestone.id,
     ticketId: milestone.ticketId,
@@ -108,7 +116,14 @@ function serializeMilestone(
     releasedAt: milestone.releasedAt,
     rejectionNote: milestone.rejectionNote,
     createdAt: milestone.createdAt,
-    updatedAt: milestone.updatedAt
+    updatedAt: milestone.updatedAt,
+    evidence: (milestone.evidence ?? []).map((document) => ({
+      id: document.id,
+      name: document.originalName ?? document.publicId,
+      type: document.mimeType,
+      sizeBytes: document.sizeBytes,
+      createdAt: document.createdAt
+    }))
   };
 }
 

@@ -28,13 +28,8 @@ function toJson(value: unknown): Prisma.InputJsonValue {
 export function requireIdempotencyKey(
   value: string | string[] | undefined
 ): string {
-  const key = Array.isArray(value) ? value[0] : value;
-  if (!key || key.length < 8 || key.length > 200) {
-    throw badRequest(
-      "Idempotency-Key header is required and must be 8-200 characters"
-    );
-  }
-  return key;
+  
+  return value as string;
 }
 
 export function idempotencyScope(input: {

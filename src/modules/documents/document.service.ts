@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   Document,
   DocumentKind,
@@ -350,6 +351,71 @@ export async function registerDocument(
       format,
       originalName: input.originalName ?? asset.originalName,
       mimeType: mimeTypes[format] ?? "application/octet-stream",
+      sizeBytes: asset.bytes,
+      checksum: asset.etag
+    }
+  });
+
+  return serializeDocument(document);
+}
+
+export async function uploadMilestoneEvidence(
+  prisma: PrismaClient,
+  storage: StoragePort,
+  userId: string,
+  platformRole: PlatformRole,
+  ticketId: string,
+  milestoneId: string,
+  input: { fileName: string; mimeType: string; dataBase64: string }
+) {
+  const target = await resolveTarget(prisma, userId, platformRole, {
+    purpose: "EVIDENCE",
+    milestoneId
+  });
+  if (target.ticketId !== ticketId) {
+    throw notFound("Milestone not found");
+  }
+
+  const config = storage.getUploadConfig("EVIDENCE");
+  const format = (input.fileName.split(".").pop() ?? "").toLowerCase();
+  if (!config.allowedFormats.includes(format)) {
+    throw conflict(`File format ${format || "unknown"} is not allowed`);
+  }
+
+  const buffer = Buffer.from(input.dataBase64, "base64");
+  if (buffer.length === 0) {
+    throw conflict("Uploaded file is empty");
+  }
+  if (buffer.length > config.maxBytes) {
+    throw conflict("Uploaded file is too large");
+  }
+
+  const resourceType = input.mimeType.startsWith("image/") ? "image" : "raw";
+  const publicId = `${config.folder}/${randomUUID()}.${format}`;
+  const asset = await storage.upload({
+    purpose: "EVIDENCE",
+    publicId,
+    buffer,
+    resourceType,
+    format,
+    contentType: input.mimeType
+  });
+
+  const document = await prisma.document.create({
+    data: {
+      ownerOrgId: target.ownerOrgId,
+      uploadedById: userId,
+      ticketId: target.ticketId,
+      milestoneId: target.milestoneId,
+      verificationCaseId: null,
+      kind: "EVIDENCE",
+      storageKey: asset.publicId,
+      publicId: asset.publicId,
+      secureUrl: asset.secureUrl,
+      resourceType: asset.resourceType,
+      format: asset.format,
+      originalName: input.fileName,
+      mimeType: input.mimeType || mimeTypes[format] || "application/octet-stream",
       sizeBytes: asset.bytes,
       checksum: asset.etag
     }

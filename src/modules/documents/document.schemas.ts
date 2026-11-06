@@ -48,6 +48,15 @@ export const RegisterDocumentBody = Type.Object(
   { additionalProperties: false }
 );
 
+export const UploadMilestoneEvidenceBody = Type.Object(
+  {
+    fileName: Type.String({ minLength: 1, maxLength: 255 }),
+    mimeType: Type.String({ minLength: 1, maxLength: 150 }),
+    dataBase64: Type.String({ minLength: 1 })
+  },
+  { additionalProperties: false }
+);
+
 export const TicketParams = Type.Object(
   { ticketId: Type.String({ minLength: 1 }) },
   { additionalProperties: false }

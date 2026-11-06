@@ -5,14 +5,16 @@ import {
   MilestoneParams,
   RegisterDocumentBody,
   TicketParams,
-  UploadConfigQuery
+  UploadConfigQuery,
+  UploadMilestoneEvidenceBody
 } from "./document.schemas";
 import {
   deleteDocument,
   getDocumentDownload,
   listMilestoneEvidence,
   listTicketDocuments,
-  registerDocument
+  registerDocument,
+  uploadMilestoneEvidence
 } from "./document.service";
 import { generateTicketPdf } from "./ticket-pdf.service";
 
@@ -102,6 +104,30 @@ const documentRoutes: FastifyPluginAsync = async (app) => {
         request.params.ticketId
       );
       return reply.send(result);
+    }
+  );
+
+  app.post<{
+    Params: Static<typeof MilestoneParams>;
+    Body: Static<typeof UploadMilestoneEvidenceBody>;
+  }>(
+    "/tickets/:ticketId/milestones/:milestoneId/evidence",
+    {
+      preHandler: app.authenticate,
+      bodyLimit: 16 * 1024 * 1024,
+      schema: { params: MilestoneParams, body: UploadMilestoneEvidenceBody }
+    },
+    async (request, reply) => {
+      const document = await uploadMilestoneEvidence(
+        app.prisma,
+        app.storage,
+        request.currentUser!.id,
+        request.currentUser!.platformRole,
+        request.params.ticketId,
+        request.params.milestoneId,
+        request.body
+      );
+      return reply.code(201).send({ document });
     }
   );
 

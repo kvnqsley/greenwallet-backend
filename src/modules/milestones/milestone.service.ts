@@ -244,7 +244,7 @@ export async function submitMilestone(
   const scope = idempotencyScope({
     organizationId: ticket.buyerOrgId,
     endpoint: "POST /tickets/:ticketId/milestones/:milestoneId/submit",
-    key: idempotencyKey,
+    key:crypto.randomUUID(),
     request: { ticketId, milestoneId, action: "SUBMIT" }
   });
 
@@ -260,6 +260,7 @@ export async function submitMilestone(
       assertReleaseableTicket(current);
       const milestone = requireMilestone(current, milestoneId);
 
+      console.log({milestone})
       if (
         milestone.status !== "PENDING" &&
         milestone.status !== "REJECTED"
@@ -270,6 +271,7 @@ export async function submitMilestone(
       const evidenceCount = await tx.document.count({
         where: { milestoneId }
       });
+      console.log({evidenceCount})
       if (evidenceCount === 0) {
         throw conflict(
           "Milestone submission requires at least one evidence document"
@@ -282,7 +284,8 @@ export async function submitMilestone(
           status: "SUBMITTED",
           submittedById: userId,
           submittedAt: new Date(),
-          rejectionNote: null
+          rejectionNote: null,
+          
         }
       });
 
