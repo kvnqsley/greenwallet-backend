@@ -1,4 +1,4 @@
-﻿import type { PlatformRole, PrismaClient } from "@prisma/client";
+import type { PlatformRole, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import type { Static } from "@sinclair/typebox";
 import { recordAudit } from "../../common/audit";
@@ -116,6 +116,7 @@ export function serializeTicket(ticket: TicketWithRelations) {
   return {
     id: ticket.id,
     reference: ticket.reference,
+    title: ticket.title,
     buyerOrgId: ticket.buyerOrgId,
     supplierOrgId: ticket.supplierOrgId,
     exporterOrgId: ticket.exporterOrgId,
@@ -177,6 +178,24 @@ function partyOrgIds(ticket: {
   return [ticket.buyerOrgId, ticket.supplierOrgId, ticket.exporterOrgId].filter(
     (id): id is string => Boolean(id)
   );
+}
+
+async function creatorOrganizationId(
+  db: Db,
+  ticket: {
+    buyerOrgId: string;
+    supplierOrgId: string;
+    createdById: string;
+  }
+): Promise<string | null> {
+  const membership = await db.membership.findFirst({
+    where: {
+      userId: ticket.createdById,
+      organizationId: { in: [ticket.buyerOrgId, ticket.supplierOrgId] }
+    },
+    select: { organizationId: true }
+  });
+  return membership?.organizationId ?? null;
 }
 
 async function ticketPartyUserIds(
@@ -292,27 +311,30 @@ function parseQuantity(value: string): Prisma.Decimal {
   return quantity;
 }
 
-function parseMoney(value: string): bigint {
+export function parseMinorAmount(value: string, field: string): bigint {
   if (!/^\d+$/.test(value)) {
-    throw badRequest("unitPriceMinor must be an integer amount in minor units");
+    throw badRequest(`${field} must be an integer amount in minor units`);
   }
   const amount = BigInt(value);
   if (amount <= 0n) {
-    throw badRequest("unitPriceMinor must be greater than zero");
+    throw badRequest(`${field} must be greater than zero`);
   }
   return amount;
 }
 
-function computeTotal(
-  quantity: Prisma.Decimal,
-  unitPriceMinor: bigint
-): bigint {
-  return BigInt(
-    quantity
-      .mul(new Prisma.Decimal(unitPriceMinor.toString()))
-      .toDecimalPlaces(0)
-      .toFixed(0)
-  );
+export function parseExpectedTotal(
+  value: string | undefined,
+  required: boolean
+): bigint | null {
+  if (value === undefined) {
+    if (required) {
+      throw badRequest(
+        "expectedTotalMinor is required when the ticket amount changes"
+      );
+    }
+    return null;
+  }
+  return parseMinorAmount(value, "expectedTotalMinor");
 }
 
 function parseDate(
@@ -331,10 +353,15 @@ function parseDate(
 
 function buildScalarUpdate(
   ticket: TicketMoneyState,
-  patch: TicketPatchInput
-): { data: Prisma.TicketUncheckedUpdateInput; exporterChanged: boolean } {
+  patch: TicketPatchInput,
+  expectedTotalMinor: string | undefined
+): {
+  data: Prisma.TicketUncheckedUpdateInput;
+  exporterChanged: boolean;
+} {
   const data: Prisma.TicketUncheckedUpdateInput = {};
 
+  if (patch.title !== undefined) data.title = patch.title;
   if (patch.commodity !== undefined) data.commodity = patch.commodity;
   if (patch.grade !== undefined) data.grade = patch.grade;
   if (patch.unit !== undefined) data.unit = patch.unit;
@@ -360,13 +387,20 @@ function buildScalarUpdate(
     moneyChanged = true;
   }
   if (patch.unitPriceMinor !== undefined) {
-    unitPriceMinor = parseMoney(patch.unitPriceMinor);
+    unitPriceMinor = parseMinorAmount(
+      patch.unitPriceMinor,
+      "unitPriceMinor"
+    );
     moneyChanged = true;
   }
   if (moneyChanged) {
     data.quantity = quantity;
     data.unitPriceMinor = unitPriceMinor;
-    data.totalMinor = computeTotal(quantity, unitPriceMinor);
+  }
+
+  const totalMinor = parseExpectedTotal(expectedTotalMinor, moneyChanged);
+  if (totalMinor !== null) {
+    data.totalMinor = totalMinor;
   }
 
   const exporterChanged =
@@ -376,7 +410,10 @@ function buildScalarUpdate(
     data.exporterOrgId = patch.exporterOrgId;
   }
 
-  return { data, exporterChanged };
+  return {
+    data,
+    exporterChanged
+  };
 }
 
 async function ensureExporterAllowed(
@@ -456,8 +493,14 @@ export async function createTicket(
   input: Static<typeof CreateTicketBody>
 ) {
   const quantity = parseQuantity(input.quantity);
-  const unitPriceMinor = parseMoney(input.unitPriceMinor);
-  const totalMinor = computeTotal(quantity, unitPriceMinor);
+  const unitPriceMinor = parseMinorAmount(
+    input.unitPriceMinor,
+    "unitPriceMinor"
+  );
+  const totalMinor = parseMinorAmount(
+    input.expectedTotalMinor,
+    "expectedTotalMinor"
+  );
   const exporterOrgId = input.exporterOrgId ?? null;
 
   const [buyer, supplier] = await Promise.all([
@@ -489,7 +532,7 @@ export async function createTicket(
       userId,
       organizationId: { in: [buyer.id, supplier.id] }
     },
-    select: { id: true }
+    select: { id: true, organizationId: true }
   });
   if (!membership) {
     throw forbidden(
@@ -497,18 +540,43 @@ export async function createTicket(
     );
   }
 
+  const creatorAcceptedAt = new Date();
   const partyInputs: Array<{
     organizationId: string;
     role: "BUYER" | "SUPPLIER" | "EXPORTER";
+    status?: "ACCEPTED";
+    acceptedById?: string;
+    acceptedAt?: Date;
   }> = [
-    { organizationId: buyer.id, role: "BUYER" },
-    { organizationId: supplier.id, role: "SUPPLIER" }
+    {
+      organizationId: buyer.id,
+      role: "BUYER",
+      ...(membership.organizationId === buyer.id
+        ? {
+            status: "ACCEPTED" as const,
+            acceptedById: userId,
+            acceptedAt: creatorAcceptedAt
+          }
+        : {})
+    },
+    {
+      organizationId: supplier.id,
+      role: "SUPPLIER",
+      ...(membership.organizationId === supplier.id
+        ? {
+            status: "ACCEPTED" as const,
+            acceptedById: userId,
+            acceptedAt: creatorAcceptedAt
+          }
+        : {})
+    }
   ];
   if (exporterOrgId) {
     partyInputs.push({ organizationId: exporterOrgId, role: "EXPORTER" });
   }
 
   const data: Omit<Prisma.TicketUncheckedCreateInput, "reference"> = {
+    title: input.title ?? null,
     buyerOrgId: buyer.id,
     supplierOrgId: supplier.id,
     exporterOrgId,
@@ -538,7 +606,10 @@ export async function createTicket(
           data: partyInputs.map((party) => ({
             ticketId: created.id,
             organizationId: party.organizationId,
-            role: party.role
+            role: party.role,
+            status: party.status,
+            acceptedById: party.acceptedById,
+            acceptedAt: party.acceptedAt
           }))
         });
         return tx.ticket.findUniqueOrThrow({
@@ -582,6 +653,20 @@ export async function listTickets(
         { supplierOrgId: { in: orgIds } },
         { exporterOrgId: { in: orgIds } }
       ]
+    });
+    filters.push({
+      NOT: {
+        AND: [
+          { status: "DRAFT" },
+          {
+            OR: [
+              { buyerOrgId: { in: orgIds } },
+              { supplierOrgId: { in: orgIds } }
+            ]
+          },
+          { NOT: { createdBy: { memberships: { some: { organizationId: { in: orgIds } } } } } }
+        ]
+      }
     });
   }
 
@@ -633,6 +718,24 @@ export async function getTicket(
   const ticket = await loadTicket(prisma as unknown as Db, ticketId);
   if (!isPlatformAdmin(platformRole)) {
     await requireTicketMembership(prisma as unknown as Db, userId, ticket);
+    if (ticket.status === "DRAFT" && ticket.createdById !== userId) {
+      const creatorMemberships = await (prisma as unknown as Db).membership.findMany({
+        where: { userId: ticket.createdById },
+        select: { organizationId: true }
+      });
+      const creatorOrgIds = creatorMemberships.map((m) => m.organizationId);
+      const callerMemberships = await (prisma as unknown as Db).membership.findMany({
+        where: { userId },
+        select: { organizationId: true }
+      });
+      const callerOrgIds = callerMemberships.map((m) => m.organizationId);
+      const sharesCreatorOrg = callerOrgIds.some((id) =>
+        creatorOrgIds.includes(id)
+      );
+      if (!sharesCreatorOrg) {
+        throw notFound("Ticket not found");
+      }
+    }
   }
   return serializeTicket(ticket);
 }
@@ -643,8 +746,11 @@ export async function updateTicket(
   ticketId: string,
   input: Static<typeof UpdateTicketBody>
 ) {
-  const { version, ...patch } = input;
-  if (Object.keys(patch).length === 0) {
+  const { version, expectedTotalMinor, ...patch } = input;
+  if (
+    Object.keys(patch).length === 0 &&
+    expectedTotalMinor === undefined
+  ) {
     throw badRequest("No ticket fields were supplied");
   }
 
@@ -661,7 +767,11 @@ export async function updateTicket(
       throw conflict("Ticket has changed since it was loaded; reload and retry");
     }
 
-    const { data, exporterChanged } = buildScalarUpdate(ticket, patch);
+    const { data, exporterChanged } = buildScalarUpdate(
+      ticket,
+      patch,
+      expectedTotalMinor
+    );
     if (exporterChanged) {
       await applyExporterChange(tx, ticket, patch.exporterOrgId ?? null);
     }
@@ -764,6 +874,12 @@ export async function acceptTicket(
       ticket,
       organizationId
     );
+    const creatorOrgId = await creatorOrganizationId(tx, ticket);
+    if (creatorOrgId === membership.organizationId) {
+      throw forbidden(
+        "The creator cannot accept their own ticket; the counterparty must accept it"
+      );
+    }
     const party = ticket.parties.find(
       (candidate) => candidate.organizationId === membership.organizationId
     );
@@ -790,7 +906,9 @@ export async function acceptTicket(
       where: { ticketId },
       select: { organizationId: true, status: true }
     });
-    const requiredOrgIds = [ticket.buyerOrgId, ticket.supplierOrgId];
+    const requiredOrgIds = [ticket.buyerOrgId, ticket.supplierOrgId].filter(
+      (orgId) => orgId !== creatorOrgId
+    );
     const allRequiredAccepted = requiredOrgIds.every((orgId) =>
       parties.some(
         (candidate) =>
@@ -824,7 +942,8 @@ export async function acceptTicket(
       title: "Ticket accepted",
       body: `Ticket ${ticket.reference} has been accepted by a party.`,
       data: { ticketId },
-      userIds: await ticketPartyUserIds(tx, ticket)
+      userIds: await ticketPartyUserIds(tx, ticket),
+      skipEmailOutbox: true
     });
 
     const updated = await tx.ticket.findUniqueOrThrow({
@@ -853,6 +972,12 @@ export async function declineTicket(
       ticket,
       organizationId
     );
+    const creatorOrgId = await creatorOrganizationId(tx, ticket);
+    if (creatorOrgId === membership.organizationId) {
+      throw forbidden(
+        "The creator cannot decline their own ticket; the counterparty must respond"
+      );
+    }
     const party = ticket.parties.find(
       (candidate) => candidate.organizationId === membership.organizationId
     );
@@ -887,7 +1012,8 @@ export async function declineTicket(
       title: "Ticket declined",
       body: `Ticket ${ticket.reference} was declined and cancelled.`,
       data: { ticketId },
-      userIds: await ticketPartyUserIds(tx, ticket)
+      userIds: await ticketPartyUserIds(tx, ticket),
+      skipEmailOutbox: true
     });
 
     const updated = await tx.ticket.findUniqueOrThrow({
@@ -1093,7 +1219,7 @@ export async function proposeAmendment(
       throw conflict("This ticket already has a pending amendment");
     }
 
-    buildScalarUpdate(ticket, patch);
+    buildScalarUpdate(ticket, patch, patch.expectedTotalMinor);
     if (patch.exporterOrgId) {
       await ensureExporterAllowed(tx, ticket, patch.exporterOrgId);
     }
@@ -1221,7 +1347,11 @@ export async function decideAmendment(
     }
 
     const patch = amendment.patch as unknown as TicketPatchInput;
-    const { data, exporterChanged } = buildScalarUpdate(ticket, patch);
+    const { data, exporterChanged } = buildScalarUpdate(
+      ticket,
+      patch,
+      patch.expectedTotalMinor
+    );
     if (exporterChanged) {
       await applyExporterChange(tx, ticket, patch.exporterOrgId ?? null);
     }

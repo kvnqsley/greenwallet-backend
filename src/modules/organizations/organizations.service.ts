@@ -1,4 +1,4 @@
-﻿import type { OrgRole, PrismaClient } from "@prisma/client";
+import type { OrgRole, PrismaClient } from "@prisma/client";
 import { env } from "../../config/env";
 import { recordAudit } from "../../common/audit";
 import {
@@ -339,3 +339,52 @@ export async function removeMember(
 
   await prisma.membership.delete({ where: { id: target.id } });
 }
+
+export async function searchOrganizations(
+  prisma: PrismaClient,
+  query: { name?: string; q?: string; limit?: number },
+  excludeUserId: string
+) {
+  const searchTerm = (query.name || query.q || "").trim();
+  const limit = Math.min(query.limit ?? 20, 50);
+
+  const memberships = await prisma.membership.findMany({
+    where: { userId: excludeUserId },
+    select: { organizationId: true }
+  });
+  const excludeOrgIds = memberships.map((m) => m.organizationId);
+
+  const whereClause: Record<string, unknown> = {};
+
+  if (searchTerm) {
+    whereClause.name = {
+      contains: searchTerm,
+      mode: "insensitive"
+    };
+  }
+
+  if (excludeOrgIds.length > 0) {
+    whereClause.id = {
+      notIn: excludeOrgIds
+    };
+  }
+
+  const organizations = await prisma.organization.findMany({
+    where: whereClause,
+    select: {
+      id: true,
+      name: true,
+      type: true,
+      regNumber: true,
+      country: true,
+      roles: true,
+      verification: true,
+      createdAt: true
+    },
+    orderBy: { name: "asc" },
+    take: limit
+  });
+
+  return organizations;
+}
+

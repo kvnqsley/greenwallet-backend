@@ -53,7 +53,11 @@ const envSchema = z
       .min(32, "JWT_ACCESS_SECRET must be at least 32 characters"),
     JWT_ACCESS_TTL: z.string().default("15m"),
     REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
-    PAYMENT_PROVIDER: z.enum(["mock"]).default("mock"),
+    PAYMENT_PROVIDER: z.enum(["mock", "paystack"]).default("mock"),
+    PAYSTACK_SECRET_KEY: optionalString,
+    PAYSTACK_PUBLIC_KEY: optionalString,
+    PAYSTACK_BASE_URL: z.string().url().default("https://api.paystack.co"),
+    PAYSTACK_CALLBACK_URL: optionalString,
     MAIL_PROVIDER: z.enum(["log", "zoho"]).default("log"),
     MAIL_FROM_ADDRESS: optionalEmail,
     ZOHO_MAIL_REGION: z
@@ -134,6 +138,14 @@ const envSchema = z
         DOJAH_SECRET_KEY: value.DOJAH_SECRET_KEY,
         DOJAH_WIDGET_ID: value.DOJAH_WIDGET_ID,
         DOJAH_WEBHOOK_SECRET: value.DOJAH_WEBHOOK_SECRET
+      }
+    );
+
+    requireWhen(
+      value.PAYMENT_PROVIDER === "paystack",
+      "PAYMENT_PROVIDER=paystack",
+      {
+        PAYSTACK_SECRET_KEY: value.PAYSTACK_SECRET_KEY
       }
     );
   });

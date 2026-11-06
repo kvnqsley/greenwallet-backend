@@ -26,6 +26,15 @@ import {
   submitTicket,
   updateTicket
 } from "./ticket.service";
+import {
+  getTicketCharge,
+  verifyTicketCharge
+} from "../payments/ticket-charge.service";
+import {
+  notifyBuyerTicketAccepted,
+  notifyBuyerTicketDeclined,
+  notifySellerTicketCreated
+} from "./ticket-email";
 
 const ticketRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Body: Static<typeof CreateTicketBody> }>(
@@ -98,6 +107,12 @@ const ticketRoutes: FastifyPluginAsync = async (app) => {
         request.currentUser!.id,
         request.params.ticketId
       );
+      await notifySellerTicketCreated(
+        app.prisma,
+        app.mailer,
+        request.log,
+        ticket
+      );
       return reply.send({ ticket });
     }
   );
@@ -113,7 +128,44 @@ const ticketRoutes: FastifyPluginAsync = async (app) => {
         request.params.ticketId,
         body.organizationId
       );
+
+      if (ticket.status === "ACTIVE") {
+        await notifyBuyerTicketAccepted(
+          app.prisma,
+          app.mailer,
+          request.log,
+          ticket
+        );
+      }
+
       return reply.send({ ticket });
+    }
+  );
+
+  app.get<{ Params: Static<typeof TicketParams> }>(
+    "/tickets/:ticketId/payment",
+    { preHandler: app.authenticate, schema: { params: TicketParams } },
+    async (request, reply) => {
+      const result = await getTicketCharge(
+        app.prisma,
+        request.currentUser!.id,
+        request.params.ticketId
+      );
+      return reply.send(result);
+    }
+  );
+
+  app.post<{ Params: Static<typeof TicketParams> }>(
+    "/tickets/:ticketId/payment/verify",
+    { preHandler: app.authenticate, schema: { params: TicketParams } },
+    async (request, reply) => {
+      const result = await verifyTicketCharge(
+        app.prisma,
+        app.payments,
+        request.currentUser!.id,
+        request.params.ticketId
+      );
+      return reply.send(result);
     }
   );
 
@@ -127,6 +179,12 @@ const ticketRoutes: FastifyPluginAsync = async (app) => {
         request.currentUser!.id,
         request.params.ticketId,
         body.organizationId
+      );
+      await notifyBuyerTicketDeclined(
+        app.prisma,
+        app.mailer,
+        request.log,
+        ticket
       );
       return reply.send({ ticket });
     }

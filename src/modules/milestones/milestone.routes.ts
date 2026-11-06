@@ -121,7 +121,6 @@ const milestoneRoutes: FastifyPluginAsync = async (app) => {
       );
       const result = await releaseMilestone(
         app.prisma,
-        app.payments,
         request.currentUser!.id,
         request.currentUser!.platformRole,
         request.params.ticketId,

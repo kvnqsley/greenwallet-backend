@@ -9,6 +9,7 @@ import {
   InviteBody,
   MemberParams,
   OrganizationParams,
+  SearchOrganizationsQuery,
   UpdateMemberBody,
   UpdateOrganizationBody
 } from "./organizations.schemas";
@@ -21,6 +22,7 @@ import {
   listOrganizations,
   removeMember,
   revokeInvitation,
+  searchOrganizations,
   updateMemberRole
 } from "./organizations.service";
 
@@ -56,6 +58,23 @@ const organizationRoutes: FastifyPluginAsync = async (app) => {
       });
     }
   );
+
+  app.get<{ Querystring: Static<typeof SearchOrganizationsQuery> }>(
+    "/organizations/search",
+    {
+      preHandler: app.authenticate,
+      schema: { querystring: SearchOrganizationsQuery }
+    },
+    async (request, reply) => {
+      const organizations = await searchOrganizations(
+        app.prisma,
+        request.query,
+        request.user.sub
+      );
+      return reply.send({ organizations });
+    }
+  );
+
 
   app.get<{ Params: Static<typeof OrganizationParams> }>(
     "/organizations/:organizationId",

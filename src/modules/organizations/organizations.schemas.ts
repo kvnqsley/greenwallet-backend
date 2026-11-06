@@ -79,3 +79,13 @@ export const UpdateMemberBody = Type.Object(
   },
   { additionalProperties: false }
 );
+
+export const SearchOrganizationsQuery = Type.Object(
+  {
+    name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+    q: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 }))
+  },
+  { additionalProperties: false }
+);
+

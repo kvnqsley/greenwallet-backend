@@ -19,13 +19,13 @@ import {
   readIdempotentResponse,
   type IdempotentResult
 } from "../../common/idempotency";
-import type { PaymentPort } from "../../payments/payment-port";
 import {
   serializeMilestone,
   serializeTicket,
   ticketInclude
 } from "../tickets/ticket.service";
 import {
+  ensureTicketEscrowAccount,
   ensureWallet,
   ensureWalletAccounts,
   lockWalletBalance,
@@ -447,7 +447,6 @@ type ReleaseResponse = {
 
 export async function releaseMilestone(
   prisma: PrismaClient,
-  payments: PaymentPort,
   userId: string,
   platformRole: PlatformRole,
   ticketId: string,
@@ -486,17 +485,6 @@ export async function releaseMilestone(
     throw conflict("Ticket has no supplier");
   }
 
-  const payment = await payments.releaseMilestone({
-    ticketId,
-    milestoneId,
-    supplierOrgId: ticket.supplierOrgId,
-    amountMinor: milestone.amountMinor,
-    idempotencyKey
-  });
-  if (payment.status !== "SUCCEEDED") {
-    throw badRequest("The payment provider did not approve this release");
-  }
-
   return executeIdempotent<ReleaseResponse>(
     prisma,
     scope,
@@ -526,8 +514,29 @@ export async function releaseMilestone(
         current.supplierOrgId,
         current.currency
       );
-      const buyerAccounts = await ensureWalletAccounts(tx, buyerWallet);
       const supplierAccounts = await ensureWalletAccounts(tx, supplierWallet);
+      const escrowAccountId = await ensureTicketEscrowAccount(
+        tx,
+        ticketId,
+        current.currency
+      );
+
+      const [escrowCredits, escrowDebits] = await Promise.all([
+        tx.ledgerEntry.aggregate({
+          where: { accountId: escrowAccountId, direction: "CREDIT" },
+          _sum: { amountMinor: true }
+        }),
+        tx.ledgerEntry.aggregate({
+          where: { accountId: escrowAccountId, direction: "DEBIT" },
+          _sum: { amountMinor: true }
+        })
+      ]);
+      const escrowBalance =
+        (escrowCredits._sum.amountMinor ?? 0n) -
+        (escrowDebits._sum.amountMinor ?? 0n);
+      if (escrowBalance < amountMinor) {
+        throw conflict("Ticket escrow does not have enough funds");
+      }
 
       const lockedBuyer = await lockWalletBalance(tx, buyerWallet.id);
       if (buyerWallet.id !== supplierWallet.id) {
@@ -560,11 +569,11 @@ export async function releaseMilestone(
         type: "MILESTONE_RELEASE",
         ticketId,
         milestoneId,
-        providerRef: payment.providerRef,
+        providerRef: null,
         idempotencyKey: ledgerKey,
         entries: [
           {
-            accountId: buyerAccounts.heldAccountId,
+            accountId: escrowAccountId,
             direction: "DEBIT",
             amountMinor
           },
@@ -600,7 +609,7 @@ export async function releaseMilestone(
         after: {
           status: "RELEASED",
           amountMinor: amountMinor.toString(),
-          providerRef: payment.providerRef
+          providerRef: null
         }
       });
       const recipientIds = [

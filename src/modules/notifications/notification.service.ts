@@ -23,6 +23,9 @@ export const NotificationEvents = {
   milestoneReleased: "MILESTONE_RELEASED",
   verificationApproved: "VERIFICATION_APPROVED",
   verificationRejected: "VERIFICATION_REJECTED",
+  withdrawalRequested: "WITHDRAWAL_REQUESTED",
+  withdrawalPaid: "WITHDRAWAL_PAID",
+  withdrawalFailed: "WITHDRAWAL_FAILED",
   reconciliationMismatch: "RECONCILIATION_MISMATCH"
 } as const;
 
@@ -51,6 +54,7 @@ export type EnqueueNotificationInput = {
   data?: Prisma.InputJsonValue;
   userIds?: readonly string[];
   emails?: readonly string[];
+  skipEmailOutbox?: boolean;
 };
 
 export async function enqueueNotifications(
@@ -109,7 +113,7 @@ export async function enqueueNotifications(
     }
   }
 
-  for (const to of emailTargets) {
+  for (const to of input.skipEmailOutbox ? [] : emailTargets) {
     await tx.outboxEvent.create({
       data: {
         topic: "notification.email",

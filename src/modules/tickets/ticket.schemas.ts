@@ -38,6 +38,7 @@ const nullableDate = Type.Union([
 ]);
 
 const patchProperties = {
+  title: Type.Optional(nullableText(160)),
   commodity: Type.Optional(
     Type.String({ minLength: 1, maxLength: 120 })
   ),
@@ -70,6 +71,7 @@ export const AmendmentParams = Type.Object(
 
 export const CreateTicketBody = Type.Object(
   {
+    title: Type.Optional(nullableText(160)),
     buyerOrgId: Type.String({ minLength: 1 }),
     supplierOrgId: Type.String({ minLength: 1 }),
     exporterOrgId: Type.Optional(
@@ -80,6 +82,7 @@ export const CreateTicketBody = Type.Object(
     quantity: quantityString,
     unit: Type.String({ minLength: 1, maxLength: 30 }),
     unitPriceMinor: moneyString,
+    expectedTotalMinor: moneyString,
     currency: Type.Optional(
       Type.String({ minLength: 3, maxLength: 3, pattern: "^[A-Z]{3}$" })
     ),
@@ -95,14 +98,21 @@ export const CreateTicketBody = Type.Object(
 export const UpdateTicketBody = Type.Object(
   {
     ...patchProperties,
+    expectedTotalMinor: Type.Optional(moneyString),
     version: Type.Optional(Type.Integer({ minimum: 1 }))
   },
   { additionalProperties: false }
 );
 
-export const TicketPatch = Type.Object(patchProperties, {
-  additionalProperties: false
-});
+export const TicketPatch = Type.Object(
+  {
+    ...patchProperties,
+    expectedTotalMinor: Type.Optional(moneyString)
+  },
+  {
+    additionalProperties: false
+  }
+);
 
 export const TicketListQuery = Type.Object(
   {

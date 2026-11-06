@@ -25,14 +25,14 @@ async function main() {
     process.exit(1);
   }
 
-  try {
-    await app.startJobs();
-  } catch (error) {
-    app.log.error(
-      { err: error },
-      "failed to start background jobs (check DATABASE_URL TLS settings: DATABASE_SSL_CA / DATABASE_SSL_REJECT_UNAUTHORIZED)"
-    );
-  }
+  // try {
+  //   await app.startJobs();
+  // } catch (error) {
+  //   app.log.error(
+  //     { err: error },
+  //     "failed to start background jobs (check DATABASE_URL TLS settings: DATABASE_SSL_CA / DATABASE_SSL_REJECT_UNAUTHORIZED)"
+  //   );
+  // }
 }
 
 void main();

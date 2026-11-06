@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   AccountType,
   PaymentProvider,
   PlatformRole,
@@ -7,36 +7,13 @@ import type {
 } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { env } from "../../config/env";
-import { recordAudit } from "../../common/audit";
-import {
-  badRequest,
-  conflict,
-  forbidden,
-  notFound
-} from "../../common/errors";
-import {
-  executeIdempotent,
-  idempotencyScope,
-  readIdempotentResponse,
-  type IdempotentResult
-} from "../../common/idempotency";
-import {
-  enqueueNotifications,
-  NotificationEvents,
-  orgMemberIds
-} from "../notifications/notification.service";
+import { notFound } from "../../common/errors";
 import { assertBalancedLedger } from "./ledger.math";
-import type { PaymentPort } from "../../payments/payment-port";
-import {
-  serializeTicket,
-  ticketInclude,
-  type TicketWithRelations
-} from "../tickets/ticket.service";
 
 type Db = Prisma.TransactionClient;
 
 const providerName: PaymentProvider =
-  env.PAYMENT_PROVIDER === "mock" ? "MOCK" : "NOMBA";
+  env.PAYMENT_PROVIDER === "mock" ? "MOCK" : "PAYSTACK";
 
 const walletInclude = {
   balance: true,
@@ -122,24 +99,6 @@ export function serializeLedgerTransaction(
       account: entry.account
     }))
   };
-}
-
-async function requireOrgRole(
-  db: Db,
-  userId: string,
-  organizationId: string,
-  roles: Array<"OWNER" | "ADMIN" | "MEMBER">
-) {
-  const membership = await db.membership.findUnique({
-    where: { userId_organizationId: { userId, organizationId } }
-  });
-  if (!membership) {
-    throw notFound("Organization not found");
-  }
-  if (!roles.includes(membership.role)) {
-    throw forbidden("You do not have permission to perform this action");
-  }
-  return membership;
 }
 
 async function ensureLedgerAccount(
@@ -279,6 +238,20 @@ export async function ensureExternalSettlementAccount(
   return account.id;
 }
 
+export async function ensureTicketEscrowAccount(
+  tx: Db,
+  ticketId: string,
+  currency: string
+): Promise<string> {
+  const account = await ensureLedgerAccount(tx, {
+    type: "TICKET_ESCROW",
+    currency,
+    walletId: null,
+    ticketId
+  });
+  return account.id;
+}
+
 export async function lockWalletBalance(
   tx: Db,
   walletId: string
@@ -305,8 +278,9 @@ export async function postLedgerTransaction(
     type: TxnType;
     ticketId: string | null;
     milestoneId: string | null;
-    providerRef: string;
+    providerRef: string | null;
     idempotencyKey: string;
+    status?: "PENDING" | "POSTED" | "FAILED" | "REVERSED";
     entries: Array<{
       accountId: string;
       direction: "DEBIT" | "CREDIT";
@@ -319,7 +293,7 @@ export async function postLedgerTransaction(
   return tx.ledgerTransaction.create({
     data: {
       type: input.type,
-      status: "POSTED",
+      status: input.status ?? "POSTED",
       ticketId: input.ticketId,
       milestoneId: input.milestoneId,
       provider: providerName,
@@ -467,179 +441,3 @@ export async function getTicketLedger(
   };
 }
 
-export type FundTicketResponse = {
-  ticket: ReturnType<typeof serializeTicket>;
-  transaction: ReturnType<typeof serializeLedgerTransaction>;
-};
-
-type FundingTicket = TicketWithRelations & {
-  buyer: { id: string; verification: string };
-};
-
-export async function fundTicket(
-  prisma: PrismaClient,
-  payments: PaymentPort,
-  userId: string,
-  ticketId: string,
-  idempotencyKey: string
-): Promise<IdempotentResult<FundTicketResponse>> {
-  const ticket = (await prisma.ticket.findUnique({
-    where: { id: ticketId },
-    include: {
-      ...ticketInclude,
-      buyer: { select: { id: true, verification: true, name: true } }
-    }
-  })) as FundingTicket | null;
-
-  if (!ticket) {
-    throw notFound("Ticket not found");
-  }
-  await requireOrgRole(prisma as unknown as Db, userId, ticket.buyerOrgId, [
-    "OWNER",
-    "ADMIN"
-  ]);
-
-  const amountMinor = ticket.totalMinor;
-  const scope = idempotencyScope({
-    organizationId: ticket.buyerOrgId,
-    endpoint: "POST /tickets/:ticketId/fund",
-    key: idempotencyKey,
-    request: {
-      ticketId,
-      amountMinor: amountMinor.toString(),
-      type: "TICKET_FUNDING"
-    }
-  });
-
-  const replay = await readIdempotentResponse<FundTicketResponse>(
-    prisma,
-    scope
-  );
-  if (replay) {
-    return replay;
-  }
-
-  if (ticket.buyer.verification !== "VERIFIED") {
-    throw forbidden("Buyer organization must be verified before funding");
-  }
-  if (ticket.status !== "ACTIVE") {
-    throw conflict("Only an active ticket can be funded");
-  }
-  if (ticket.totalMinor <= 0n) {
-    throw conflict("Ticket amount must be greater than zero");
-  }
-
-  const payment = await payments.fundTicket({
-    ticketId,
-    orgId: ticket.buyerOrgId,
-    amountMinor,
-    idempotencyKey
-  });
-  if (payment.status !== "SUCCEEDED") {
-    throw badRequest("The payment provider did not approve this funding");
-  }
-
-  return executeIdempotent<FundTicketResponse>(
-    prisma,
-    scope,
-    async (tx, ledgerKey) => {
-      const current = (await tx.ticket.findUnique({
-        where: { id: ticketId },
-        include: {
-          ...ticketInclude,
-          buyer: { select: { id: true, verification: true, name: true } }
-        }
-      })) as FundingTicket | null;
-
-      if (!current) {
-        throw notFound("Ticket not found");
-      }
-      await requireOrgRole(tx, userId, current.buyerOrgId, ["OWNER", "ADMIN"]);
-      if (current.buyer.verification !== "VERIFIED") {
-        throw forbidden("Buyer organization must be verified before funding");
-      }
-      if (current.status !== "ACTIVE") {
-        throw conflict("Only an active ticket can be funded");
-      }
-
-      const wallet = await ensureWallet(
-        tx,
-        current.buyerOrgId,
-        current.currency
-      );
-      const accounts = await ensureWalletAccounts(tx, wallet);
-      const externalAccountId = await ensureExternalSettlementAccount(
-        tx,
-        current.currency
-      );
-
-      await lockWalletBalance(tx, wallet.id);
-      await tx.walletBalance.update({
-        where: { walletId: wallet.id },
-        data: { heldMinor: { increment: amountMinor } }
-      });
-
-      const transaction = await postLedgerTransaction(tx, {
-        type: "TICKET_FUNDING",
-        ticketId,
-        milestoneId: null,
-        providerRef: payment.providerRef,
-        idempotencyKey: ledgerKey,
-        entries: [
-          {
-            accountId: externalAccountId,
-            direction: "DEBIT",
-            amountMinor
-          },
-          {
-            accountId: accounts.heldAccountId,
-            direction: "CREDIT",
-            amountMinor
-          }
-        ]
-      });
-
-      const updated = await tx.ticket.updateMany({
-        where: { id: ticketId, status: "ACTIVE" },
-        data: { status: "FUNDED", fundedAt: new Date() }
-      });
-      if (updated.count !== 1) {
-        throw conflict("Ticket is no longer active");
-      }
-
-      const funded = await tx.ticket.findUniqueOrThrow({
-        where: { id: ticketId },
-        include: ticketInclude
-      });
-
-      await recordAudit(tx, {
-        actorId: userId,
-        actorOrgId: current.buyerOrgId,
-        action: "ticket.fund",
-        entityType: "Ticket",
-        entityId: ticketId,
-        before: { status: "ACTIVE" },
-        after: {
-          status: "FUNDED",
-          amountMinor: amountMinor.toString(),
-          providerRef: payment.providerRef
-        }
-      });
-      await enqueueNotifications(tx, {
-        eventType: NotificationEvents.ticketFunded,
-        title: "Ticket funded",
-        body: `Ticket ${current.reference} has been funded and is ready for performance.`,
-        data: { ticketId },
-        userIds: await orgMemberIds(tx, current.supplierOrgId)
-      });
-
-      return {
-        code: 200,
-        body: {
-          ticket: serializeTicket(funded),
-          transaction: serializeLedgerTransaction(transaction)
-        }
-      };
-    }
-  );
-}

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import fp from "fastify-plugin";
 import { PgBoss } from "pg-boss";
 import type { FastifyInstance } from "fastify";
@@ -103,7 +104,8 @@ async function reconcilePayments(app: FastifyInstance) {
     let providerStatus: string;
     try {
       const provider = await app.payments.getTransaction(
-        transaction.providerRef
+        transaction.providerRef,
+        transaction.type === "WITHDRAWAL" ? "transfer" : "charge"
       );
       providerStatus = provider.status;
     } catch (error) {
@@ -205,63 +207,63 @@ function bossConnectionOptions() {
   return { connectionString: url.toString(), ssl };
 }
 
-export default fp(
-  async (app) => {
-    const boss = new PgBoss({
-      ...bossConnectionOptions(),
-      schema: "pgboss"
-    });
-    let started = false;
+// export default fp(
+//   async (app) => {
+//     const boss = new PgBoss({
+//       ...bossConnectionOptions(),
+//       schema: "pgboss"
+//     });
+//     let started = false;
 
-    boss.on("error", (error: Error) => {
-      app.log.error({ err: error }, "pg-boss error");
-    });
+//     boss.on("error", (error: Error) => {
+//       app.log.error({ err: error }, "pg-boss error");
+//     });
 
-    app.decorate("boss", boss);
-    app.decorate("startJobs", async () => {
-      if (started) {
-        return;
-      }
+//     app.decorate("boss", boss);
+//     app.decorate("startJobs", async () => {
+//       if (started) {
+//         return;
+//       }
 
-      await boss.start();
-      started = true;
+//       await boss.start();
+//       started = true;
 
-      await boss.createQueue(EMAIL_RELAY_QUEUE);
-      await boss.createQueue(MAINTENANCE_QUEUE);
-      await boss.createQueue(RECONCILE_QUEUE);
+//       await boss.createQueue(EMAIL_RELAY_QUEUE);
+//       await boss.createQueue(MAINTENANCE_QUEUE);
+//       await boss.createQueue(RECONCILE_QUEUE);
 
-      await boss.work(EMAIL_RELAY_QUEUE, { batchSize: 1 }, async () => {
-        const processed = await relayEmailOutbox(app);
-        if (processed > 0) {
-          app.log.info({ processed }, "relayed notification emails");
-        }
-      });
-      await boss.work(MAINTENANCE_QUEUE, { batchSize: 1 }, async () => {
-        await expireInvitations(app);
-      });
-      await boss.work(RECONCILE_QUEUE, { batchSize: 1 }, async () => {
-        await reconcilePayments(app);
-      });
+//       await boss.work(EMAIL_RELAY_QUEUE, { batchSize: 1 }, async () => {
+//         const processed = await relayEmailOutbox(app);
+//         if (processed > 0) {
+//           app.log.info({ processed }, "relayed notification emails");
+//         }
+//       });
+//       await boss.work(MAINTENANCE_QUEUE, { batchSize: 1 }, async () => {
+//         await expireInvitations(app);
+//       });
+//       await boss.work(RECONCILE_QUEUE, { batchSize: 1 }, async () => {
+//         await reconcilePayments(app);
+//       });
 
-      await boss.schedule(EMAIL_RELAY_QUEUE, "* * * * *", null, {
-        key: "email-relay"
-      });
-      await boss.schedule(MAINTENANCE_QUEUE, "0 3 * * *", null, {
-        key: "maintenance"
-      });
-      await boss.schedule(RECONCILE_QUEUE, "30 2 * * *", null, {
-        key: "reconcile"
-      });
+//       await boss.schedule(EMAIL_RELAY_QUEUE, "* * * * *", null, {
+//         key: "email-relay"
+//       });
+//       await boss.schedule(MAINTENANCE_QUEUE, "0 3 * * *", null, {
+//         key: "maintenance"
+//       });
+//       await boss.schedule(RECONCILE_QUEUE, "30 2 * * *", null, {
+//         key: "reconcile"
+//       });
 
-      app.log.info("background jobs started");
-    });
+//       app.log.info("background jobs started");
+//     });
 
-    app.addHook("onClose", async () => {
-      if (started) {
-        started = false;
-        await boss.stop();
-      }
-    });
-  },
-  { name: "jobs", dependencies: ["prisma", "mailer"] }
-);
+//     app.addHook("onClose", async () => {
+//       if (started) {
+//         started = false;
+//         await boss.stop();
+//       }
+//     });
+//   },
+//   { name: "jobs", dependencies: ["prisma", "mailer"] }
+// );

@@ -91,6 +91,7 @@ enum TxnType {
   WALLET_FUNDING
   TICKET_FUNDING
   MILESTONE_RELEASE
+  WITHDRAWAL
   REFUND
   FEE
   ADJUSTMENT
@@ -106,6 +107,23 @@ enum TxnStatus {
 enum PaymentProvider {
   MOCK
   NOMBA
+  PAYSTACK
+}
+
+enum TicketChargeStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  ABANDONED
+  REVERSED
+}
+
+enum WithdrawalStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  REVERSED
 }
 
 enum InvitationStatus {
@@ -164,6 +182,7 @@ model User {
   notifications         Notification[]
   notificationPreferences NotificationPreference[]
   auditEvents           AuditEvent[]
+  requestedWithdrawals  Withdrawal[] @relation("WithdrawalRequester")
 }
 
 model Organization {
@@ -188,6 +207,9 @@ model Organization {
   documents         Document[]
   idempotencyKeys   IdempotencyKey[]
   auditEvents       AuditEvent[] @relation("AuditActorOrganization")
+  bankAccounts      BankAccount[]
+  withdrawals       Withdrawal[]
+  ticketCharges     TicketCharge[]
 }
 
 model Membership {
@@ -253,6 +275,7 @@ model VerificationCase {
 model Ticket {
   id               String   @id @default(uuid())
   reference        String   @unique
+  title            String?
   buyerOrgId       String
   supplierOrgId    String
   exporterOrgId    String?
@@ -294,10 +317,38 @@ model Ticket {
   ledgerAccounts     LedgerAccount[]
   shareLinks         ShareLink[]
   documents          Document[]
+  charges            TicketCharge[]
 
   @@index([buyerOrgId, status])
   @@index([supplierOrgId, status])
   @@index([status, createdAt])
+}
+
+model TicketCharge {
+  id                    String            @id @default(uuid())
+  ticketId              String
+  organizationId        String
+  provider              PaymentProvider
+  reference             String            @unique
+  amountMinor           BigInt
+  currency              String            @default("NGN")
+  status                TicketChargeStatus @default(PENDING)
+  authorizationUrl      String?
+  accessCode            String?
+  customerEmail         String
+  channel               String?
+  providerTransactionId String?
+  failureReason         String?
+  paidAt                DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  ticket         Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@index([ticketId, status])
+  @@index([organizationId, status])
+  @@index([provider, providerTransactionId])
 }
 
 model TicketParty {
@@ -378,6 +429,7 @@ model Wallet {
   organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   balance        WalletBalance?
   ledgerAccounts LedgerAccount[]
+  withdrawals    Withdrawal[]
 
   @@unique([organizationId, currency])
 }
@@ -389,6 +441,53 @@ model WalletBalance {
   updatedAt      DateTime @updatedAt
 
   wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+}
+
+model BankAccount {
+  id             String   @id @default(uuid())
+  organizationId String
+  currency       String   @default("NGN")
+  bankCode       String
+  bankName       String
+  accountName    String
+  accountNumber  String
+  recipientCode  String   @unique
+  isDefault      Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  withdrawals  Withdrawal[]
+
+  @@unique([organizationId, bankCode, accountNumber])
+  @@index([organizationId])
+}
+
+model Withdrawal {
+  id             String           @id @default(uuid())
+  organizationId String
+  walletId       String
+  bankAccountId  String
+  amountMinor    BigInt
+  currency       String           @default("NGN")
+  status         WithdrawalStatus @default(PENDING)
+  provider       PaymentProvider
+  providerRef    String?          @unique
+  idempotencyKey String           @unique
+  recipientCode  String
+  failureReason  String?
+  requestedById  String
+  processedAt    DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  wallet       Wallet       @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  bankAccount  BankAccount  @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  requestedBy  User         @relation("WithdrawalRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, status])
+  @@index([walletId, status])
 }
 
 model LedgerAccount {

@@ -9,7 +9,7 @@ import mailerPlugin from "./plugins/mailer";
 import paymentsPlugin from "./plugins/payments";
 import storagePlugin from "./plugins/storage";
 import verificationPlugin from "./plugins/verification";
-import jobsPlugin from "./plugins/jobs";
+// import jobsPlugin from "./plugins/jobs";
 import healthRoutes from "./modules/health/routes";
 import authRoutes from "./modules/auth/auth.routes";
 import usersRoutes from "./modules/users/users.routes";
@@ -23,6 +23,7 @@ import shareRoutes from "./modules/share/share.routes";
 import notificationRoutes from "./modules/notifications/notification.routes";
 import adminRoutes from "./modules/admin/admin.routes";
 import verificationWebhookRoutes from "./modules/verification/verification.webhook";
+import paymentWebhookRoutes from "./modules/payments/payment.webhook";
 
 export async function buildApp() {
   const app = Fastify({
@@ -53,7 +54,7 @@ export async function buildApp() {
   await app.register(paymentsPlugin);
   await app.register(storagePlugin);
   await app.register(verificationPlugin);
-  await app.register(jobsPlugin);
+  // await app.register(jobsPlugin);
   await app.register(healthRoutes, { prefix: "/health" });
   await app.register(authRoutes, { prefix: "/api/v1/auth" });
   await app.register(usersRoutes, { prefix: "/api/v1" });
@@ -68,6 +69,9 @@ export async function buildApp() {
   await app.register(adminRoutes, { prefix: "/api/v1" });
   await app.register(verificationWebhookRoutes, {
     prefix: "/api/v1/webhooks"
+  });
+  await app.register(paymentWebhookRoutes, {
+    prefix: "/api/v1/webhooks/payments"
   });
 
   app.get("/", async () => ({
